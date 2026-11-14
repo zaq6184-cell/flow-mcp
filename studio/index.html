@@ -257,7 +257,7 @@ audio{width:100%;margin-top:8px;filter:invert(1) hue-rotate(180deg)}
           </div>
           <div class="grid2">
             <div><label class="f">Takes per shot</label><div class="seg" data-seg="s_variants"></div></div>
-            <div><label class="f">Max credits per shot</label><input type="number" id="s_max" min="0" value="25"></div>
+            <div><label class="f">Max credits per shot</label><input type="number" id="s_max" min="0" value="100"></div>
           </div>
         </div>
         <h2 style="margin-top:18px">Shots <small id="s_count"></small></h2>
@@ -449,14 +449,22 @@ const media = (path) => `/media?token=${TOKEN}&path=${encodeURIComponent(path)}`
 const toast = (msg, bad) => { const t = Object.assign(document.createElement("div"), { className: "toast" + (bad ? " bad" : ""), textContent: msg }); document.body.append(t); setTimeout(() => t.remove(), bad ? 7000 : 3200); };
 const guard = () => { if (!LIVE) { toast("Not connected — start Flow Studio first.", true); return false; } return true; };
 
-// Prices Flow quotes on a Pro plan, x1 take.
-const VIDEO_COST = { "Omni 1.1 Flash": { "360p": { 4: 4, 6: 5, 8: 6, 10: 7 }, "720p": { 4: 7, 6: 10, 8: 12, 10: 15 } }, "Veo 3.1 - Lite": 10, "Veo 3.1 - Fast": 20, "Veo 3.1 - Quality": 100 };
+// Prices Flow quotes on a Pro plan, x1 take. Omni 1.2 is priced per second (measured 2026-11-14): at 720p 3 a second up
+// to 10 s and 6 a second beyond; 360p costs a third.
+const VIDEO_COST = {
+  "Omni 1.2 Flash": (d, res) => (d <= 10 ? 3 * d : 30 + 6 * (d - 10)) / (res === "360p" ? 3 : 1),
+  "Omni 1.1 Flash": { "360p": { 4: 4, 6: 5, 8: 6, 10: 7 }, "720p": { 4: 7, 6: 10, 8: 12, 10: 15 } },
+  "Veo 3.1 - Lite": 10, "Veo 3.1 - Fast": 20, "Veo 3.1 - Quality": 100,
+};
+// Lengths each Omni offers: Omni 1.2 has a 3-15 s slider, Omni 1.1 four fixed buttons.
+const DURATIONS = { "Omni 1.2 Flash": { min: 3, max: 15 }, "Omni 1.1 Flash": [4, 6, 8, 10] };
+const LEAVING = { "Omni 1.1 Flash": "Dec 5", "Veo 3.1 - Fast": "Dec 5", "Veo 3.1 - Quality": "Dec 5" };
 const blank = () => ({ prompt: "", technique: "", chain: false, match: false, first: null, last: null, refs: [] });
 const DEFAULTS = {
   tab: "cast",
   frames: { project: "MyFilm", aspect: "16:9", variants: 1, engine: "exact", scenes: [blank()] },
-  shots: { project: "MyFilm", model: "Omni 1.1 Flash", aspect: "16:9", duration: 8, resolution: "720p", variants: 1, quality: "original", max: 25, scenes: [blank()] },
-  narrate: { project: "MyFilm", engine: "kokoro", kokoroVoice: "am_michael", speed: 100, geminiVoice: "Charon", text: "", style: "" },
+  shots: { project: "MyFilm", model: "Omni 1.2 Flash", aspect: "16:9", duration: 8, resolution: "720p", variants: 1, quality: "original", max: 100, scenes: [blank()] },
+  narrate: { project: "MyFilm", engine: "gemini", kokoroVoice: "am_michael", speed: 100, geminiVoice: "Charon", text: "", style: "" },
   cut: { project: "MyFilm", music: null, voiceover: null, hold: true, clips: [] },
   captions: { video: null, style: "bold", position: "bottom", size: 100, colors: {}, text: "" },
 };
@@ -490,7 +498,7 @@ const SEGS = {
   f_variants: { get: () => S.frames.variants, set: (v) => (S.frames.variants = +v), opts: [1, 2, 3, 4] },
   f_engine: { get: () => S.frames.engine, set: (v) => (S.frames.engine = v), opts: ["exact", "agent"], labels: { exact: "One by one", agent: "Flow agent · all at once" } },
   s_aspect: { get: () => S.shots.aspect, set: (v) => (S.shots.aspect = v), opts: ["16:9", "9:16"] },
-  s_duration: { get: () => S.shots.duration, set: (v) => (S.shots.duration = +v), opts: [4, 6, 8, 10] },
+  s_duration: { get: () => S.shots.duration, set: (v) => (S.shots.duration = +v), get opts() { const d = DURATIONS[S.shots.model]; return Array.isArray(d) ? d : [4, 6, 8, 10]; } },
   s_resolution: { get: () => S.shots.resolution, set: (v) => (S.shots.resolution = v), opts: ["360p", "720p"] },
   s_quality: { get: () => S.shots.quality, set: (v) => (S.shots.quality = v), opts: ["original", "upscaled"], labels: { original: "720p", upscaled: "1080p" } },
   s_variants: { get: () => S.shots.variants, set: (v) => (S.shots.variants = +v), opts: [1, 2, 3, 4] },
@@ -503,9 +511,20 @@ function renderSegs() {
     const host = $(`[data-seg="${key}"]`); if (!host) continue;
     const omni = S.shots.model.startsWith("Omni");
     const off = (key === "s_duration" || key === "s_resolution") && !omni;
+    const range = key === "s_duration" && !Array.isArray(DURATIONS[S.shots.model]) && DURATIONS[S.shots.model];
+    if (range) {
+      host.innerHTML = `<input type="range" id="s_len" min="${range.min}" max="${range.max}" step="1" value="${S.shots.duration}" style="flex:1 1 auto;accent-color:var(--bone)"><b style="font:700 16px var(--mono);min-width:3ch;text-align:right">${S.shots.duration}s</b>`;
+      continue;
+    }
     host.innerHTML = cfg.opts.map((o) => `<button type="button" data-v="${o}" class="${String(cfg.get()) === String(o) ? "on" : ""}" ${off ? "disabled" : ""}>${cfg.labels?.[o] ?? o}</button>`).join("");
   }
 }
+document.addEventListener("input", (e) => {
+  if (e.target.id !== "s_len") return;
+  S.shots.duration = +e.target.value;
+  e.target.nextElementSibling.textContent = `${S.shots.duration}s`;
+  estimate(); save();
+});
 document.addEventListener("click", (e) => {
   const b = e.target.closest("[data-seg] button"); if (!b || b.disabled) return;
   SEGS[b.parentElement.dataset.seg].set(b.dataset.v);
@@ -1034,7 +1053,7 @@ $("#l_trash").onclick = async () => {
 /* ---------- roll ---------- */
 const sceneCost = (sc) => {
   const m = VIDEO_COST[S.shots.model];
-  const per = typeof m === "number" ? m : m[S.shots.resolution][S.shots.duration];
+  const per = typeof m === "function" ? m(S.shots.duration, S.shots.resolution) : typeof m === "number" ? m : m[S.shots.resolution][S.shots.duration];
   return per * S.shots.variants;
 };
 function estimate() {
@@ -1186,7 +1205,12 @@ async function poll(detailed = false) {
 /* ---------- boot ---------- */
 function renderAll() {
   for (const [id, val] of [["f_project", S.frames.project], ["s_project", S.shots.project], ["n_project", S.narrate.project], ["c_project", S.cut.project], ["e_project", S.cut.project], ["l_project", S.cut.project]]) if ($("#" + id) && !$("#" + id).value) $("#" + id).value = val;
-  $("#s_model").innerHTML = Object.keys(VIDEO_COST).map((m) => `<option ${m === S.shots.model ? "selected" : ""}>${m}</option>`).join("");
+  if (!VIDEO_COST[S.shots.model]) S.shots.model = DEFAULTS.shots.model;
+  // Keep the length on one this model offers: the nearest button, or inside the slider's range.
+  const lengths = DURATIONS[S.shots.model];
+  if (Array.isArray(lengths) && !lengths.includes(S.shots.duration)) S.shots.duration = lengths.reduce((a, b) => (Math.abs(b - S.shots.duration) < Math.abs(a - S.shots.duration) ? b : a));
+  else if (lengths && !Array.isArray(lengths)) S.shots.duration = Math.min(lengths.max, Math.max(lengths.min, S.shots.duration));
+  $("#s_model").innerHTML = Object.keys(VIDEO_COST).map((m) => `<option value="${m}" ${m === S.shots.model ? "selected" : ""}>${m}${LEAVING[m] ? ` · leaving Flow ${LEAVING[m]}` : ""}</option>`).join("");
   renderSegs(); renderScenes(); renderCast(); renderNarrate();
   const mus = $('[data-slot="music"]'), vo = $('[data-slot="voiceover"]');
   if (mus) mus.outerHTML = slotHtml("music", 0, S.cut.music, "Music track");

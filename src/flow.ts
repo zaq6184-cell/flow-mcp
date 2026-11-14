@@ -380,6 +380,37 @@ async function pickModel(page: Page, model: string): Promise<void> {
   await pause(page, 700);
 }
 
+// Omni 1.1 offers fixed 4s/6s/8s/10s buttons. Omni 1.2 (Nov 2026) has a "Length" slider instead, 3 to 15 s in 1 s
+// steps, labelled "8 Sec". The slider is walked with the keyboard (Home, then one step at a time) until its label reads
+// the length asked for, so a later model with another range or step needs no code change.
+async function pickDuration(page: Page, seconds: number): Promise<void> {
+  const radio = page.getByRole("radio", { name: `${seconds}s`, exact: true }).first();
+  const slider = page.locator('input[type="range"][aria-label="Length"]').first();
+  const shown = async () => Number((await page.locator(".duration-slider-value").first().innerText().catch(() => "")).match(/\d+/)?.[0] ?? NaN);
+  const visible = async () => (await radio.isVisible().catch(() => false)) || (await slider.isVisible().catch(() => false));
+  if (!(await visible())) await openSettings(page).catch(() => undefined);
+  if (await radio.isVisible().catch(() => false)) return pickRadio(page, `${seconds}s`);
+  if (!(await slider.isVisible().catch(() => false))) {
+    const offered = (await page.getByRole("radio").allInnerTexts()).map((t) => t.trim()).filter((t) => /^\d+s$/.test(t));
+    throw new Error(`Flow has no ${seconds}s length for this model.${offered.length ? ` Lengths offered: ${offered.join(", ")}.` : ""}`);
+  }
+  if ((await shown()) === seconds) return;
+  await slider.focus();
+  await page.keyboard.press("Home");
+  await pause(page, 300);
+  const min = await shown();
+  for (let step = 0; step < 60; step++) {
+    const now = await shown();
+    if (now === seconds) return;
+    if (now > seconds) break;
+    const before = await slider.inputValue();
+    await page.keyboard.press("ArrowRight");
+    await pause(page, 300);
+    if ((await slider.inputValue()) === before) break;
+  }
+  throw new Error(`Flow's Length slider for this model runs from ${min} s to ${await shown()} s, so a ${seconds} s clip is not possible.`);
+}
+
 // Applies the scene settings and returns the credit cost Flow quotes for them.
 // One Escape does not always shut the settings popover (2026-10-30: it stayed open after a run and its credit label
 // swallowed the next click on the prompt box, so flow_character timed out). Check it is gone, and try again.
@@ -404,7 +435,7 @@ async function applySettings(page: Page, job: Job): Promise<number> {
   const model = s.type === "image" && LEGACY_IMAGE_MODEL.test(s.model ?? "") ? LATEST_IMAGE_MODEL : s.model;
   if (model) await pickModel(page, model);
   if (s.type === "video" && s.resolution) await pickRadio(page, new RegExp(`^${s.resolution}`));
-  if (s.type === "video" && s.duration) await pickRadio(page, `${s.duration}s`);
+  if (s.type === "video" && s.duration) await pickDuration(page, s.duration);
   await pickRadio(page, `x${s.variants ?? 1}`);
   await pause(page, 600);
   // The quote is "<N> credits". Low balances add an "Add AI credits" banner link that the old /credits?$/ also matched.
